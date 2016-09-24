@@ -49,7 +49,7 @@ int pthread_attr_init(pthread_attr_t* attr) {
 }
 
 int pthread_attr_destroy(pthread_attr_t* attr) {
-  memset(attr, 0x42, sizeof(pthread_attr_t));
+  memset(attr, 0xdf, sizeof(pthread_attr_t));
   return 0;
 }
 
@@ -114,7 +114,7 @@ int pthread_attr_setstack(pthread_attr_t* attr, void* stack_base, size_t stack_s
   return 0;
 }
 
-static int __pthread_attr_getstack_main_thread(void** stack_base, size_t* stack_size) {
+int __pthread_attr_getstack_main_thread(void** stack_base, size_t* stack_size) {
   ErrnoRestorer errno_restorer;
 
   rlimit stack_limit;

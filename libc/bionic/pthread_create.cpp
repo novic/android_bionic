@@ -29,6 +29,7 @@
 #include <pthread.h>
 
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -53,13 +54,6 @@ extern "C" int __isthreaded;
 
 // This code is used both by each new pthread and the code that initializes the main thread.
 void __init_tls(pthread_internal_t* thread) {
-  if (thread->mmap_size == 0) {
-    // If the TLS area was not allocated by mmap(), it may not have been cleared to zero.
-    // So assume the worst and zero the TLS area.
-    memset(thread->tls, 0, sizeof(thread->tls));
-    memset(thread->key_data, 0, sizeof(thread->key_data));
-  }
-
   // Slot 0 must point to itself. The x86 Linux kernel reads the TLS from %fs:0.
   thread->tls[TLS_SLOT_SELF] = thread->tls;
   thread->tls[TLS_SLOT_THREAD_ID] = thread;
@@ -87,6 +81,7 @@ void __init_alternate_signal_stack(pthread_internal_t* thread) {
     // We can only use const static allocated string for mapped region name, as Android kernel
     // uses the string pointer directly when dumping /proc/pid/maps.
     prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, ss.ss_sp, ss.ss_size, "thread signal stack");
+    prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, stack_base, PAGE_SIZE, "thread signal stack guard page");
   }
 }
 
@@ -118,11 +113,10 @@ int __init_thread(pthread_internal_t* thread) {
   return error;
 }
 
-static void* __create_thread_mapped_space(size_t mmap_size, size_t stack_guard_size) {
+static void* __create_thread_mapped_space(size_t mmap_size, size_t stack_guard_size, size_t gap_size) {
   // Create a new private anonymous map.
-  int prot = PROT_READ | PROT_WRITE;
   int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
-  void* space = mmap(NULL, mmap_size, prot, flags, -1, 0);
+  void* space = mmap(nullptr, mmap_size, PROT_NONE, flags, -1, 0);
   if (space == MAP_FAILED) {
     __libc_format_log(ANDROID_LOG_WARN,
                       "libc",
@@ -133,13 +127,22 @@ static void* __create_thread_mapped_space(size_t mmap_size, size_t stack_guard_s
 
   // Stack is at the lower end of mapped space, stack guard region is at the lower end of stack.
   // Set the stack guard region to PROT_NONE, so we can detect thread stack overflow.
-  if (mprotect(space, stack_guard_size, PROT_NONE) == -1) {
+  //
+  // Make the usable portion of the stack between the guard region and random gap readable and
+  // writable.
+  size_t stack_size = mmap_size - gap_size;
+  size_t usable_size = stack_size - stack_guard_size;
+  void *guard_boundary = reinterpret_cast<uint8_t*>(space) + stack_guard_size;
+  if (mprotect(guard_boundary, usable_size, PROT_READ | PROT_WRITE) == -1) {
     __libc_format_log(ANDROID_LOG_WARN, "libc",
-                      "pthread_create failed: couldn't mprotect PROT_NONE %zu-byte stack guard region: %s",
-                      stack_guard_size, strerror(errno));
+                      "pthread_create failed: couldn't mprotect PROT_READ | PROT_WRITE %zu-byte stack region: %s",
+                      usable_size, strerror(errno));
     munmap(space, mmap_size);
     return NULL;
   }
+  prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, space, stack_guard_size, "thread stack guard page");
+  void* random_gap = reinterpret_cast<uint8_t*>(space) + stack_size;
+  prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, random_gap, gap_size, "thread stack random gap");
 
   return space;
 }
@@ -150,14 +153,39 @@ static int __allocate_thread(pthread_attr_t* attr, pthread_internal_t** threadp,
 
   if (attr->stack_base == NULL) {
     // The caller didn't provide a stack, so allocate one.
+
+    // Place a randomly sized gap above the stack, up to 10% as large as the stack
+    // on 32-bit and 50% on 64-bit where virtual memory is plentiful.
+#if __LP64__
+    size_t max_gap_size = attr->stack_size / 2;
+#else
+    size_t max_gap_size = attr->stack_size / 10;
+#endif
+
+    size_t gap_size = BIONIC_ALIGN_DOWN(arc4random_uniform(max_gap_size), PAGE_SIZE) + PAGE_SIZE;
+
     // Make sure the stack size and guard size are multiples of PAGE_SIZE.
-    mmap_size = BIONIC_ALIGN(attr->stack_size + sizeof(pthread_internal_t), PAGE_SIZE);
+    size_t stack_size = BIONIC_ALIGN(attr->stack_size + PAGE_SIZE, PAGE_SIZE);
+    mmap_size = stack_size + gap_size;
+    if (mmap_size < stack_size) {
+      return EAGAIN; // overflow
+    }
+
     attr->guard_size = BIONIC_ALIGN(attr->guard_size, PAGE_SIZE);
-    attr->stack_base = __create_thread_mapped_space(mmap_size, attr->guard_size);
+    attr->stack_base = __create_thread_mapped_space(mmap_size, attr->guard_size, gap_size);
     if (attr->stack_base == NULL) {
       return EAGAIN;
     }
-    stack_top = reinterpret_cast<uint8_t*>(attr->stack_base) + mmap_size;
+    stack_top = reinterpret_cast<uint8_t*>(attr->stack_base) + stack_size;
+
+    // Choose a random base within the first page of the stack. Waste no more than
+    // 1% of the available stack space.
+    size_t max_random_base_size = attr->stack_size / 100;
+    if (max_random_base_size > PAGE_SIZE - 1) {
+      max_random_base_size = PAGE_SIZE - 1;
+    }
+    size_t random_base_size = arc4random_uniform(max_random_base_size);
+    stack_top -= random_base_size;
   } else {
     // Remember the mmap size is zero and we don't need to free it.
     mmap_size = 0;
@@ -169,10 +197,16 @@ static int __allocate_thread(pthread_attr_t* attr, pthread_internal_t** threadp,
   //   thread stack (including guard page)
 
   // To safely access the pthread_internal_t and thread stack, we need to find a 16-byte aligned boundary.
-  stack_top = reinterpret_cast<uint8_t*>(
-                (reinterpret_cast<uintptr_t>(stack_top) - sizeof(pthread_internal_t)) & ~0xf);
+  stack_top = reinterpret_cast<uint8_t*>(reinterpret_cast<uintptr_t>(stack_top) & ~0xf);
 
-  pthread_internal_t* thread = reinterpret_cast<pthread_internal_t*>(stack_top);
+  pthread_internal_t* thread = static_cast<pthread_internal_t*>(
+      mmap(nullptr, sizeof(pthread_internal_t), PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS,
+           -1, 0));
+  if (thread == MAP_FAILED) {
+    munmap(attr->stack_base, mmap_size);
+    return EAGAIN;
+  }
+  prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, thread, sizeof(pthread_internal_t), "pthread_internal_t");
   attr->stack_size = stack_top - reinterpret_cast<uint8_t*>(attr->stack_base);
 
   thread->mmap_size = mmap_size;
@@ -265,6 +299,7 @@ int pthread_create(pthread_t* thread_out, pthread_attr_t const* attr,
     if (thread->mmap_size != 0) {
       munmap(thread->attr.stack_base, thread->mmap_size);
     }
+    munmap(thread, sizeof(pthread_internal_t));
     __libc_format_log(ANDROID_LOG_WARN, "libc", "pthread_create failed: clone failed: %s", strerror(errno));
     return clone_errno;
   }

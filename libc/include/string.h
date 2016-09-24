@@ -51,6 +51,8 @@ extern void*  memmove(void *, const void *, size_t);
 extern void*  memset(void *, int, size_t);
 extern void*  memmem(const void *, size_t, const void *, size_t) __purefunc;
 
+extern void*  explicit_memset(void *s, int c, size_t n);
+
 extern char*  strchr(const char *, int) __purefunc;
 extern char* __strchr_chk(const char *, int, size_t);
 
@@ -69,7 +71,7 @@ int strcasecmp_l(const char*, const char*, locale_t) __purefunc;
 int strncasecmp(const char*, const char*, size_t) __purefunc;
 int strncasecmp_l(const char*, const char*, size_t, locale_t) __purefunc;
 
-extern char*  strdup(const char *);
+extern char*  strdup(const char *) __wur;
 
 extern char*  strstr(const char *, const char *) __purefunc;
 extern char*  strcasestr(const char *haystack, const char *needle) __purefunc;
@@ -86,7 +88,7 @@ extern int strerror_r(int, char*, size_t);
 
 extern size_t strnlen(const char *, size_t) __purefunc;
 extern char*  strncat(char* __restrict, const char* __restrict, size_t);
-extern char*  strndup(const char *, size_t);
+extern char*  strndup(const char *, size_t) __wur;
 extern int    strncmp(const char *, const char *, size_t) __purefunc;
 extern char*  stpncpy(char* __restrict, const char* __restrict, size_t);
 extern char*  strncpy(char* __restrict, const char* __restrict, size_t);
@@ -127,6 +129,14 @@ __errordecl(__memchr_buf_size_error, "memchr called with size bigger than buffer
 extern void* __memrchr_chk(const void*, int, size_t, size_t);
 __errordecl(__memrchr_buf_size_error, "memrchr called with size bigger than buffer");
 extern void* __memrchr_real(const void*, int, size_t) __RENAME(memrchr);
+
+extern int __memcmp_chk(const void*, const void*, size_t, size_t, size_t);
+__errordecl(__memcmp_buf_size_error, "memcmp called with size bigger than buffer");
+extern int __memcmp_real(const void*, const void*, size_t) __RENAME(memcmp);
+
+extern void* __memmem_chk(const void *, size_t, size_t, const void *, size_t, size_t);
+__errordecl(__memmem_buf_size_error, "memmem called with size bigger than buffer");
+extern void* __memmem_real(const void *, size_t, const void *, size_t) __RENAME(memmem);
 
 extern char* __stpncpy_chk2(char* __restrict, const char* __restrict, size_t, size_t, size_t);
 extern char* __strncpy_chk2(char* __restrict, const char* __restrict, size_t, size_t, size_t);
@@ -180,9 +190,69 @@ void* memrchr(const void *s, int c, size_t n) {
 }
 
 __BIONIC_FORTIFY_INLINE
+int memcmp(const void* a, const void* b, size_t n) {
+    size_t bos_a = __bos0(a);
+    size_t bos_b = __bos0(b);
+
+#if !defined(__clang__)
+    if (bos_a == __BIONIC_FORTIFY_UNKNOWN_SIZE && bos_b == __BIONIC_FORTIFY_UNKNOWN_SIZE) {
+        return __memcmp_real(a, b, n);
+    }
+
+    if (__builtin_constant_p(n) && n > bos_a) {
+        __memcmp_buf_size_error();
+    }
+
+    if (__builtin_constant_p(n) && n > bos_b) {
+        __memcmp_buf_size_error();
+    }
+
+    if (__builtin_constant_p(n) && n <= bos_a && n <= bos_b) {
+        return __memcmp_real(a, b, n);
+    }
+#endif
+
+    return __memcmp_chk(a, b, n, bos_a, bos_b);
+}
+
+__BIONIC_FORTIFY_INLINE
+void* memmem(const void* haystack, size_t haystacklen, const void* needle, size_t needlelen) {
+    size_t bos_haystack = __bos0(haystack);
+    size_t bos_needle = __bos0(needle);
+
+#if !defined(__clang__)
+    if (bos_haystack == __BIONIC_FORTIFY_UNKNOWN_SIZE && bos_needle == __BIONIC_FORTIFY_UNKNOWN_SIZE) {
+        return __memmem_real(haystack, haystacklen, needle, needlelen);
+    }
+
+    if (__builtin_constant_p(haystacklen) && haystacklen > bos_haystack) {
+        __memmem_buf_size_error();
+    }
+
+    if (__builtin_constant_p(needlelen) && needlelen > bos_needle) {
+        __memmem_buf_size_error();
+    }
+
+    if ((__builtin_constant_p(haystacklen) && haystacklen <= bos_haystack &&
+         __builtin_constant_p(needlelen) && needlelen <= bos_needle)) {
+        return __memmem_real(haystack, haystacklen, needle, needlelen);
+    }
+#endif
+
+    return __memmem_chk(haystack, haystacklen, bos_haystack, needle, needlelen, bos_needle);
+}
+
+__BIONIC_FORTIFY_INLINE
 void* memcpy(void* __restrict dest, const void* __restrict src, size_t copy_amount) {
     return __builtin___memcpy_chk(dest, src, copy_amount, __bos0(dest));
 }
+
+#if defined(__USE_GNU)
+//__BIONIC_FORTIFY_INLINE
+//void* mempcpy(void* __restrict dest, const void* __restrict src, size_t n) {
+//    return (char *)memcpy(dest, src, n) + n;
+//}
+#endif
 
 __BIONIC_FORTIFY_INLINE
 void* memmove(void *dest, const void *src, size_t len) {
@@ -254,6 +324,13 @@ char *strncat(char* __restrict dest, const char* __restrict src, size_t n) {
 __BIONIC_FORTIFY_INLINE
 void* memset(void *s, int c, size_t n) {
     return __builtin___memset_chk(s, c, n, __bos0(s));
+}
+
+__BIONIC_FORTIFY_INLINE
+void* explicit_memset(void *s, int c, size_t n) {
+    void *ptr = __builtin___memset_chk(s, c, n, __bos0(s));
+    __asm__ __volatile__("" : : "r"(ptr) : "memory");
+    return ptr;
 }
 
 __BIONIC_FORTIFY_INLINE

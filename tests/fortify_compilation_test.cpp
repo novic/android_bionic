@@ -187,6 +187,16 @@ void test_recvfrom() {
   recvfrom(0, buf, 6, 0, reinterpret_cast<sockaddr*>(&addr), NULL);
 }
 
+void test_sendto() {
+  char buf[4] = {0};
+  sockaddr_in addr;
+
+  // NOLINTNEXTLINE(whitespace/line_length)
+  // GCC: error: call to '__sendto_error' declared with attribute error: sendto called with size bigger than buffer
+  // clang should emit a warning, but doesn't
+  sendto(0, buf, 6, 0, reinterpret_cast<sockaddr*>(&addr), sizeof(sockaddr_in));
+}
+
 void test_umask() {
   // NOLINTNEXTLINE(whitespace/line_length)
   // GCC: error: call to '__umask_invalid_mode' declared with attribute error: umask called with invalid mode
@@ -229,4 +239,44 @@ void test_ppoll() {
   // GCC: error: call to '__ppoll_too_small_error' declared with attribute error: ppoll: pollfd array smaller than fd count
   // clang should emit a warning, but doesn't
   ppoll(fds, 2, &timeout, NULL);
+}
+
+void test_fread_overflow() {
+  char buf[4];
+  // NOLINTNEXTLINE(whitespace/line_length)
+  // GCC: error: call to '__fread_overflow' declared with attribute error: fread called with overflowing size * count
+  // clang should emit a warning, but doesn't
+  fread(buf, 2, (size_t)-1, stdin);
+}
+
+void test_fread_too_big() {
+  char buf[4];
+  // NOLINTNEXTLINE(whitespace/line_length)
+  // GCC: error: call to '__fread_too_big_error' declared with attribute error: fread called with size * count bigger than buffer
+  // clang should emit a warning, but doesn't
+  fread(buf, 1, 5, stdin);
+}
+
+void test_fwrite_overflow() {
+  char buf[4];
+  // NOLINTNEXTLINE(whitespace/line_length)
+  // GCC: error: call to '__fwrite_overflow' declared with attribute error: fwrite called with overflowing size * count
+  // clang should emit a warning, but doesn't
+  fwrite(buf, 2, (size_t)-1, stdout);
+}
+
+void test_fwrite_too_big() {
+  char buf[4] = {0};
+  // NOLINTNEXTLINE(whitespace/line_length)
+  // GCC: error: call to '__fwrite_too_big_error' declared with attribute error: fwrite called with size * count bigger than buffer
+  // clang should emit a warning, but doesn't
+  fwrite(buf, 1, 5, stdout);
+}
+
+void test_getcwd() {
+  char buf[4];
+  // NOLINTNEXTLINE(whitespace/line_length)
+  // GCC: error: call to '__getcwd_dest_size_error' declared with attribute error: getcwd called with size bigger than destination
+  // clang should emit a warning, but doesn't
+  getcwd(buf, 5);
 }

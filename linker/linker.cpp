@@ -45,6 +45,8 @@
 #include <vector>
 
 // Private C library headers.
+#include "private/bionic_macros.h"
+#include "private/bionic_prctl.h"
 #include "private/bionic_tls.h"
 #include "private/KernelArgumentBlock.h"
 #include "private/ScopedPthreadMutexLocker.h"
@@ -226,6 +228,133 @@ void SoinfoListAllocator::free(LinkedListEntry<soinfo>* entry) {
   g_soinfo_links_allocator.free(entry);
 }
 
+struct region_span {
+  struct region_span* prev;
+  struct region_span* next;
+  char* ptr;
+  size_t size;
+};
+
+static region_span region_spans;
+static LinkerTypeAllocator<region_span> region_span_allocator;
+
+extern const void* __library_region_start;
+extern const void* __library_region_end;
+
+static void remove_span(region_span* span) {
+  span->prev->next = span->next;
+  if (span->next != nullptr) {
+    span->next->prev = span->prev;
+  }
+  region_span_allocator.free(span);
+}
+
+static void library_region_init() {
+#ifdef __LP64__
+  size_t size = 1024 * 1024 * 1024;
+#else
+  size_t size = 128 * 1024 * 1024;
+#endif
+  size_t gap_size = BIONIC_ALIGN_DOWN(arc4random_uniform(size), PAGE_SIZE);
+
+  char* ptr = static_cast<char*>(mmap(nullptr, gap_size + size, PROT_NONE,
+                                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+  if (ptr == MAP_FAILED) {
+    return;
+  }
+  prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, ptr, gap_size, "library region random gap");
+  prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, ptr + gap_size, size, "library region");
+
+  region_span* span = region_span_allocator.alloc();
+  span->prev = &region_spans;
+  span->next = nullptr;
+  span->ptr = ptr + gap_size;
+  span->size = size;
+
+  region_spans.next = span;
+
+  __library_region_start = span->ptr;
+  __library_region_end = span->ptr + size;
+}
+
+void* get_library_mapping(size_t size) {
+  if (size % PAGE_SIZE != 0) {
+    __libc_format_log(ANDROID_LOG_WARN, "libc", "not a multiple of the page size");
+  }
+
+  region_span* span = nullptr;
+  for (region_span* s = region_spans.next; s != nullptr; s = s->next) {
+    if (s->size < size) {
+      continue;
+    }
+    if (span == nullptr || s->size < span->size || (s->size == span->size && s->ptr < span->ptr)) {
+      span = s;
+    }
+  }
+
+  if (span == nullptr) {
+    __libc_format_log(ANDROID_LOG_WARN, "libc", "library isolation region exhausted");
+    void* ptr = mmap(nullptr, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (ptr == MAP_FAILED) {
+      return nullptr;
+    }
+    return ptr;
+  }
+
+  void* ptr = span->ptr;
+  if (size == span->size) {
+    remove_span(span);
+  } else {
+    span->ptr += size;
+    span->size -= size;
+  }
+  return ptr;
+}
+
+static void release_library_mapping(void* ptr, size_t size) {
+  if (ptr >= __library_region_start && ptr < __library_region_end) {
+    mmap(ptr, size, PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, ptr, size, "library region");
+
+    region_span* span = nullptr;
+    for (region_span* s = region_spans.next; s != nullptr; s = s->next) {
+      if (s->ptr + s->size == ptr) {
+        ptr = s->ptr;
+        size += s->size;
+        span = s;
+        break;
+      }
+    }
+
+    for (region_span* s = region_spans.next; s != nullptr; s = s->next) {
+      if (s->ptr == static_cast<char*>(ptr) + size) {
+        size += s->size;
+        if (span == nullptr) {
+          span = s;
+        } else {
+          remove_span(s);
+        }
+        break;
+      }
+    }
+
+    if (span == nullptr) {
+      span = region_span_allocator.alloc();
+      span->prev = &region_spans;
+      span->next = region_spans.next;
+      if (region_spans.next != nullptr) {
+        region_spans.next->prev = span;
+      }
+      region_spans.next = span;
+    }
+
+    span->ptr = static_cast<char*>(ptr);
+    span->size = size;
+  } else {
+    munmap(ptr, size);
+  }
+}
+
 static soinfo* soinfo_alloc(const char* name, struct stat* file_stat,
                             off64_t file_offset, uint32_t rtld_flags) {
   if (strlen(name) >= PATH_MAX) {
@@ -248,7 +377,7 @@ static void soinfo_free(soinfo* si) {
   }
 
   if (si->base != 0 && si->size != 0) {
-    munmap(reinterpret_cast<void*>(si->base), si->size);
+    release_library_mapping(reinterpret_cast<void*>(si->base), si->size);
   }
 
   soinfo *prev = nullptr, *trav;
@@ -809,6 +938,7 @@ class ProtectedDataGuard {
   void protect_data(int protection) {
     g_soinfo_allocator.protect_all(protection);
     g_soinfo_links_allocator.protect_all(protection);
+    region_span_allocator.protect_all(protection);
   }
 
   static size_t ref_count_;
@@ -1523,7 +1653,7 @@ static bool find_libraries(soinfo* start_with, const char* const library_names[]
 
   if (soinfos == nullptr) {
     size_t soinfos_size = sizeof(soinfo*)*library_names_count;
-    soinfos = reinterpret_cast<soinfo**>(alloca(soinfos_size));
+    soinfos = reinterpret_cast<soinfo**>(malloc(soinfos_size));
     memset(soinfos, 0, soinfos_size);
   }
 
@@ -1752,10 +1882,18 @@ soinfo* do_dlopen(const char* name, int flags, const android_dlextinfo* extinfo)
       DL_ERR("invalid extended flags to android_dlopen_ext: 0x%" PRIx64, extinfo->flags);
       return nullptr;
     }
+
     if ((extinfo->flags & ANDROID_DLEXT_USE_LIBRARY_FD) == 0 &&
         (extinfo->flags & ANDROID_DLEXT_USE_LIBRARY_FD_OFFSET) != 0) {
       DL_ERR("invalid extended flag combination (ANDROID_DLEXT_USE_LIBRARY_FD_OFFSET without "
           "ANDROID_DLEXT_USE_LIBRARY_FD): 0x%" PRIx64, extinfo->flags);
+      return nullptr;
+    }
+
+    if ((extinfo->flags & ANDROID_DLEXT_LOAD_AT_FIXED_ADDRESS) != 0 &&
+        (extinfo->flags & (ANDROID_DLEXT_RESERVED_ADDRESS | ANDROID_DLEXT_RESERVED_ADDRESS_HINT)) != 0) {
+      DL_ERR("invalid extended flag combination: ANDROID_DLEXT_LOAD_AT_FIXED_ADDRESS is not "
+             "compatible with ANDROID_DLEXT_RESERVED_ADDRESS/ANDROID_DLEXT_RESERVED_ADDRESS_HINT");
       return nullptr;
     }
   }
@@ -3227,6 +3365,8 @@ static ElfW(Addr) __linker_init_post_relocation(KernelArgumentBlock& args, ElfW(
 
   // Initialize system properties
   __system_properties_init(); // may use 'environ'
+
+  library_region_init();
 
   debuggerd_init();
 

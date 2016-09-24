@@ -106,7 +106,11 @@ void pthread_exit(void* return_value) {
     // pthread_internal_t is freed below with stack, not here.
     __pthread_internal_remove(thread);
 
-    if (thread->mmap_size != 0) {
+    void* stack_base = thread->attr.stack_base;
+    size_t mmap_size = thread->mmap_size;
+    munmap(thread, sizeof(pthread_internal_t));
+
+    if (mmap_size != 0) {
       // We need to free mapped space for detached threads when they exit.
       // That's not something we can do in C.
 
@@ -116,7 +120,7 @@ void pthread_exit(void* return_value) {
       sigfillset(&mask);
       sigprocmask(SIG_SETMASK, &mask, NULL);
 
-      _exit_with_stack_teardown(thread->attr.stack_base, thread->mmap_size);
+      _exit_with_stack_teardown(stack_base, mmap_size);
     }
   }
 

@@ -22,6 +22,8 @@
 
 #define	_POSIX_C_SOURCE	199309L
 #define	_GNU_SOURCE	1
+#define	HAVE_GETAUXVAL
+#include <sys/cdefs.h>
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/ioctl.h>
@@ -58,6 +60,16 @@
 #endif
 #include <sys/vfs.h>
 
+#include "md5.h"
+
+/* Make do with what is available in Bionic. */
+#define MD5_DIGEST_LENGTH 16
+#define SHA512_CTX MD5_CTX
+#define SHA512_Init MD5_Init
+#define SHA512_Update MD5_Update
+#define SHA512_Final MD5_Final
+#define SHA512_DIGEST_LENGTH MD5_DIGEST_LENGTH
+
 #define REPEAT 5
 #define min(a, b) (((a) < (b)) ? (a) : (b))
 
@@ -83,10 +95,8 @@ static int getentropy_urandom(void *buf, size_t len);
 #ifdef SYS__sysctl
 static int getentropy_sysctl(void *buf, size_t len);
 #endif
-#ifdef HAVE_OPENSSL
 static int getentropy_fallback(void *buf, size_t len);
 static int getentropy_phdr(struct dl_phdr_info *info, size_t size, void *data);
-#endif
 
 int
 getentropy(void *buf, size_t len)
@@ -168,11 +178,9 @@ getentropy(void *buf, size_t len)
 #ifdef FAIL_INSTEAD_OF_TRYING_FALLBACK
 	raise(SIGKILL);
 #endif
-#ifdef HAVE_OPENSSL
 	ret = getentropy_fallback(buf, len);
 	if (ret != -1)
 		return (ret);
-#endif
 
 	errno = EIO;
 	return (ret);
@@ -314,8 +322,6 @@ sysctlfailed:
 }
 #endif /* SYS__sysctl */
 
-#ifdef HAVE_OPENSSL
-
 static int cl[] = {
 	CLOCK_REALTIME,
 #ifdef CLOCK_MONOTONIC
@@ -342,7 +348,7 @@ static int cl[] = {
 };
 
 static int
-getentropy_phdr(struct dl_phdr_info *info, size_t size, void *data)
+getentropy_phdr(struct dl_phdr_info *info, __unused size_t size, void *data)
 {
 	SHA512_CTX *ctx = data;
 
@@ -562,4 +568,3 @@ getentropy_fallback(void *buf, size_t len)
 	return -1;
 }
 
-#endif /* HAVE_OPENSSL */

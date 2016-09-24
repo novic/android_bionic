@@ -219,14 +219,14 @@ int	 ferror(FILE *);
 int	 fflush(FILE *);
 int	 fgetc(FILE *);
 char	*fgets(char * __restrict, int, FILE * __restrict);
-FILE	*fopen(const char * __restrict , const char * __restrict);
+FILE	*fopen(const char * __restrict , const char * __restrict) __wur;
 int	 fprintf(FILE * __restrict , const char * __restrict, ...)
 		__printflike(2, 3);
 int	 fputc(int, FILE *);
 int	 fputs(const char * __restrict, FILE * __restrict);
 size_t	 fread(void * __restrict, size_t, size_t, FILE * __restrict);
 FILE	*freopen(const char * __restrict, const char * __restrict,
-	    FILE * __restrict);
+	    FILE * __restrict) __wur;
 int	 fscanf(FILE * __restrict, const char * __restrict, ...)
 		__scanflike(2, 3);
 int	 fseek(FILE *, long, int);
@@ -235,8 +235,8 @@ size_t	 fwrite(const void * __restrict, size_t, size_t, FILE * __restrict);
 int	 getc(FILE *);
 int	 getchar(void);
 ssize_t	 getdelim(char ** __restrict, size_t * __restrict, int,
-	    FILE * __restrict);
-ssize_t	 getline(char ** __restrict, size_t * __restrict, FILE * __restrict);
+	    FILE * __restrict) __wur;
+ssize_t	 getline(char ** __restrict, size_t * __restrict, FILE * __restrict) __wur;
 
 void	 perror(const char *);
 int	 printf(const char * __restrict, ...)
@@ -252,7 +252,7 @@ void	 setbuf(FILE * __restrict, char * __restrict);
 int	 setvbuf(FILE * __restrict, char * __restrict, int, size_t);
 int	 sscanf(const char * __restrict, const char * __restrict, ...)
 		__scanflike(2, 3);
-FILE	*tmpfile(void);
+FILE	*tmpfile(void) __wur;
 int	 ungetc(int, FILE *);
 int	 vfprintf(FILE * __restrict, const char * __restrict, __va_list)
 		__printflike(2, 0);
@@ -316,17 +316,17 @@ int	 vsscanf(const char * __restrict, const char * __restrict, __va_list)
 #if __BSD_VISIBLE || __POSIX_VISIBLE || __XPG_VISIBLE
 #define	L_ctermid	1024	/* size for ctermid(); PATH_MAX */
 
-FILE	*fdopen(int, const char *);
+FILE	*fdopen(int, const char *) __wur;
 int	 fileno(FILE *);
 
 #if (__POSIX_VISIBLE >= 199209)
 int	 pclose(FILE *);
-FILE	*popen(const char *, const char *);
+FILE	*popen(const char *, const char *) __wur;
 #endif
 
 #if __POSIX_VISIBLE >= 199506
 void	 flockfile(FILE *);
-int	 ftrylockfile(FILE *);
+int	 ftrylockfile(FILE *) __wur;
 void	 funlockfile(FILE *);
 
 /*
@@ -371,7 +371,7 @@ FILE	*funopen(const void *,
 		int (*)(void *, char *, int),
 		int (*)(void *, const char *, int),
 		fpos_t (*)(void *, fpos_t, int),
-		int (*)(void *));
+		int (*)(void *)) __wur;
 
 #define	fropen(cookie, fn) funopen(cookie, fn, 0, 0, 0)
 #define	fwopen(cookie, fn) funopen(cookie, 0, fn, 0, 0)
@@ -381,6 +381,22 @@ extern char* __fgets_chk(char*, int, FILE*, size_t);
 extern char* __fgets_real(char*, int, FILE*) __RENAME(fgets);
 __errordecl(__fgets_too_big_error, "fgets called with size bigger than buffer");
 __errordecl(__fgets_too_small_error, "fgets called with size less than zero");
+
+/*  add fortified implementations of fread/fwrite
+A __size_mul_overflow utility is used to take advantage of the checked
+overflow intrinsics in Clang and GCC (>= 5). The fallback for older
+compilers is the optimized but less than ideal overflow checking pattern
+used in OpenBSD.
+*/
+extern size_t __fread_chk(void * __restrict, size_t, size_t, FILE * __restrict, size_t);
+extern size_t __fread_real(void * __restrict, size_t, size_t, FILE * __restrict) __RENAME(fread);
+__errordecl(__fread_too_big_error, "fread called with size * count bigger than buffer");
+__errordecl(__fread_overflow, "fread called with overflowing size * count");
+
+extern size_t __fwrite_chk(const void * __restrict, size_t, size_t, FILE * __restrict, size_t);
+extern size_t __fwrite_real(const void * __restrict, size_t, size_t, FILE * __restrict) __RENAME(fwrite);
+__errordecl(__fwrite_too_big_error, "fwrite called with size * count bigger than buffer");
+__errordecl(__fwrite_overflow, "fwrite called with overflowing size * count");
 
 #if defined(__BIONIC_FORTIFY)
 
@@ -428,6 +444,64 @@ int sprintf(char *dest, const char *format, ...)
 }
 #endif
 
+/*  add fortified implementations of fread/fwrite
+A __size_mul_overflow utility is used to take advantage of the checked
+overflow intrinsics in Clang and GCC (>= 5). The fallback for older
+compilers is the optimized but less than ideal overflow checking pattern
+used in OpenBSD.
+*/
+__BIONIC_FORTIFY_INLINE
+size_t fread(void * __restrict buf, size_t size, size_t count, FILE * __restrict stream) {
+    size_t bos = __bos0(buf);
+
+#if !defined(__clang__)
+    if (bos == __BIONIC_FORTIFY_UNKNOWN_SIZE) {
+        return __fread_real(buf, size, count, stream);
+    }
+
+    if (__builtin_constant_p(size) && __builtin_constant_p(count)) {
+        size_t total;
+        if (__size_mul_overflow(size, count, &total)) {
+            __fread_overflow();
+        }
+
+        if (total > bos) {
+            __fread_too_big_error();
+        }
+
+        return __fread_real(buf, size, count, stream);
+    }
+#endif
+
+    return __fread_chk(buf, size, count, stream, bos);
+}
+
+__BIONIC_FORTIFY_INLINE
+size_t fwrite(const void * __restrict buf, size_t size, size_t count, FILE * __restrict stream) {
+    size_t bos = __bos0(buf);
+
+#if !defined(__clang__)
+    if (bos == __BIONIC_FORTIFY_UNKNOWN_SIZE) {
+        return __fwrite_real(buf, size, count, stream);
+    }
+
+    if (__builtin_constant_p(size) && __builtin_constant_p(count)) {
+        size_t total;
+        if (__size_mul_overflow(size, count, &total)) {
+            __fwrite_overflow();
+        }
+
+        if (total > bos) {
+            __fwrite_too_big_error();
+        }
+
+        return __fwrite_real(buf, size, count, stream);
+    }
+#endif
+
+    return __fwrite_chk(buf, size, count, stream, bos);
+}
+///////////////////////////////////////////////////////////////////////////////////////
 #if !defined(__clang__)
 
 __BIONIC_FORTIFY_INLINE

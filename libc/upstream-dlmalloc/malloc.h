@@ -29,6 +29,14 @@ extern "C" {
 
 #include <stddef.h>   /* for size_t */
 
+#ifdef __clang__
+#define __alloc_size(x)
+#define __alloc_size2(x, y)
+#else
+#define __alloc_size(x) __attribute__((alloc_size(x)))
+#define __alloc_size2(x, y) __attribute__((alloc_size(x, y)))
+#endif
+
 #ifndef ONLY_MSPACES
 #define ONLY_MSPACES 0     /* define to a value */
 #elif ONLY_MSPACES != 0
@@ -111,7 +119,7 @@ struct mallinfo {
   maximum supported value of n differs across systems, but is in all
   cases less than the maximum representable value of a size_t.
 */
-void* dlmalloc(size_t);
+void* dlmalloc(size_t) __alloc_size(1);
 
 /*
   free(void* p)
@@ -127,7 +135,7 @@ void  dlfree(void*);
   Returns a pointer to n_elements * element_size bytes, with all locations
   set to zero.
 */
-void* dlcalloc(size_t, size_t);
+void* dlcalloc(size_t, size_t) __alloc_size2(1, 2);
 
 /*
   realloc(void* p, size_t n)
@@ -151,7 +159,7 @@ void* dlcalloc(size_t, size_t);
   The old unix realloc convention of allowing the last-free'd chunk
   to be used as an argument to realloc is not supported.
 */
-void* dlrealloc(void*, size_t);
+void* dlrealloc(void*, size_t) __alloc_size(2);
 
 /*
   realloc_in_place(void* p, size_t n)
@@ -166,7 +174,7 @@ void* dlrealloc(void*, size_t);
 
   Returns p if successful; otherwise null.
 */
-void* dlrealloc_in_place(void*, size_t);
+void* dlrealloc_in_place(void*, size_t) __alloc_size(2);
 
 /*
   memalign(size_t alignment, size_t n);
@@ -180,7 +188,7 @@ void* dlrealloc_in_place(void*, size_t);
 
   Overreliance on memalign is a sure way to fragment space.
 */
-void* dlmemalign(size_t, size_t);
+void* dlmemalign(size_t, size_t) __alloc_size(2);
 
 /*
   int posix_memalign(void** pp, size_t alignment, size_t n);
@@ -590,12 +598,12 @@ int mspace_mallopt(int, int);
   The following operate identically to their malloc counterparts
   but operate only for the given mspace argument
 */
-void* mspace_malloc(mspace msp, size_t bytes);
+void* mspace_malloc(mspace msp, size_t bytes) __alloc_size(2);
 void mspace_free(mspace msp, void* mem);
-void* mspace_calloc(mspace msp, size_t n_elements, size_t elem_size);
-void* mspace_realloc(mspace msp, void* mem, size_t newsize);
-void* mspace_realloc_in_place(mspace msp, void* mem, size_t newsize);
-void* mspace_memalign(mspace msp, size_t alignment, size_t bytes);
+void* mspace_calloc(mspace msp, size_t n_elements, size_t elem_size) __alloc_size2(2, 3);
+void* mspace_realloc(mspace msp, void* mem, size_t newsize) __alloc_size(3);
+void* mspace_realloc_in_place(mspace msp, void* mem, size_t newsize) __alloc_size(3);
+void* mspace_memalign(mspace msp, size_t alignment, size_t bytes) __alloc_size(3);
 void** mspace_independent_calloc(mspace msp, size_t n_elements,
                                  size_t elem_size, void* chunks[]);
 void** mspace_independent_comalloc(mspace msp, size_t n_elements,

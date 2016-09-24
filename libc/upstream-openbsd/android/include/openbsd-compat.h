@@ -50,10 +50,9 @@
 #define _X _CTYPE_X
 #define _B _CTYPE_B
 
-/* OpenBSD has this, but we can't really implement it correctly on Linux. */
-#define issetugid() 0
+extern int issetugid(void);
 
-#define explicit_bzero(p, s) memset(p, 0, s)
+#define explicit_bzero(p, s) ((void)explicit_memset(p, 0, s))
 
 /* OpenBSD has these in <sys/param.h>, but "ALIGN" isn't something we want to reserve. */
 #define ALIGNBYTES (sizeof(uintptr_t) - 1)

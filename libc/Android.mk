@@ -42,12 +42,12 @@ libc_common_src_files := \
     bionic/bindresvport.c \
     bionic/ether_aton.c \
     bionic/ether_ntoa.c \
+    bionic/explicit_memset.c \
     bionic/fts.c \
     bionic/getpriority.c \
     bionic/if_indextoname.c \
     bionic/if_nametoindex.c \
     bionic/initgroups.c \
-    bionic/ioctl.c \
     bionic/isatty.c \
     bionic/memmem.c \
     bionic/pututline.c \
@@ -66,11 +66,18 @@ libc_common_src_files := \
     stdlib/atexit.c \
     stdlib/exit.c \
 
+libc_common_src_files += bionic/md5.c
+
 # Fortify implementations of libc functions.
 libc_common_src_files += \
     bionic/__FD_chk.cpp \
     bionic/__fgets_chk.cpp \
+    bionic/__fread_chk.cpp \
+    bionic/__fwrite_chk.cpp \
+    bionic/__getcwd_chk.cpp \
     bionic/__memchr_chk.cpp \
+    bionic/__memcmp_chk.cpp \
+    bionic/__memmem_chk.cpp \
     bionic/__memmove_chk.cpp \
     bionic/__memrchr_chk.cpp \
     bionic/__poll_chk.cpp \
@@ -80,6 +87,7 @@ libc_common_src_files += \
     bionic/__readlink_chk.cpp \
     bionic/__readlinkat_chk.cpp \
     bionic/__recvfrom_chk.cpp \
+    bionic/__sendto_chk.cpp \
     bionic/__stpcpy_chk.cpp \
     bionic/__stpncpy_chk.cpp \
     bionic/__strchr_chk.cpp \
@@ -92,6 +100,8 @@ libc_common_src_files += \
     bionic/__umask_chk.cpp \
     bionic/__vsnprintf_chk.cpp \
     bionic/__vsprintf_chk.cpp \
+    bionic/__dynamic_object_size.cpp \
+    bionic/__library_region.cpp
 
 libc_bionic_ndk_src_files := \
     bionic/abort.cpp \
@@ -142,6 +152,8 @@ libc_bionic_ndk_src_files := \
     bionic/gettid.cpp \
     bionic/__gnu_basename.cpp \
     bionic/inotify_init.cpp \
+    bionic/ioctl.cpp \
+    bionic/issetugid.cpp \
     bionic/lchown.cpp \
     bionic/lfs64_support.cpp \
     bionic/__libc_current_sigrtmax.cpp \
@@ -161,6 +173,7 @@ libc_bionic_ndk_src_files := \
     bionic/mkfifo.cpp \
     bionic/mknod.cpp \
     bionic/mntent.cpp \
+    bionic/mremap.cpp \
     bionic/NetdClientDispatch.cpp \
     bionic/open.cpp \
     bionic/pathconf.cpp \
@@ -183,6 +196,7 @@ libc_bionic_ndk_src_files := \
     bionic/scandir.cpp \
     bionic/sched_getaffinity.cpp \
     bionic/sched_getcpu.cpp \
+    bionic/secure_getenv.cpp \
     bionic/semaphore.cpp \
     bionic/send.cpp \
     bionic/setegid.cpp \
@@ -246,6 +260,7 @@ libc_bionic_src_files += bionic/getauxval.cpp
 libc_bionic_src_files += bionic/getentropy_linux.c
 libc_bionic_src_files += bionic/sysconf.cpp
 libc_bionic_src_files += bionic/vdso.cpp
+libc_bionic_src_files += bionic/setjmp_cookie.cpp
 
 libc_cxa_src_files := \
     bionic/__cxa_guard.cpp \
@@ -573,7 +588,9 @@ libc_openbsd_src_files_32 += \
 # ========================================================
 libc_common_cflags := \
     -D_LIBC=1 \
+    -D_FORTIFY_SOURCE_STATIC \
     -Wall -Wextra -Wunused \
+    -fno-stack-protector -fstack-protector
 
 ifneq ($(TARGET_USES_LOGD),false)
 libc_common_cflags += -DTARGET_USES_LOGD
@@ -589,20 +606,14 @@ libc_common_cflags += \
     -Werror=pointer-to-int-cast \
     -Werror=int-to-pointer-cast \
     -Werror=type-limits \
+    -Wno-deprecated-declarations \
     -Werror \
 
 ifeq ($(strip $(DEBUG_BIONIC_LIBC)),true)
   libc_common_cflags += -DDEBUG
 endif
 
-ifeq ($(MALLOC_IMPL),dlmalloc)
-  libc_common_cflags += -DUSE_DLMALLOC
-  libc_malloc_src := bionic/dlmalloc.c
-else
-  libc_common_cflags += -DUSE_JEMALLOC
-  libc_malloc_src := bionic/jemalloc_wrapper.cpp
-  libc_common_c_includes += external/jemalloc/include
-endif
+libc_malloc_src := bionic/omalloc.c
 
 # To customize dlmalloc's alignment, set BOARD_MALLOC_ALIGNMENT in
 # the appropriate BoardConfig.mk file.
@@ -617,7 +628,7 @@ endif
 
 # Define some common conlyflags
 libc_common_conlyflags := \
-    -std=gnu99
+    -std=gnu11
 
 # Define some common cppflags
 libc_common_cppflags := \
@@ -1169,10 +1180,6 @@ LOCAL_WHOLE_STATIC_LIBRARIES := \
 LOCAL_WHOLE_STATIC_LIBRARIES_arm := libc_aeabi
 LOCAL_CXX_STL := none
 
-ifneq ($(MALLOC_IMPL),dlmalloc)
-LOCAL_WHOLE_STATIC_LIBRARIES += libjemalloc
-endif
-
 $(eval $(call patch-up-arch-specific-flags,LOCAL_CFLAGS,libc_common_cflags))
 $(eval $(call patch-up-arch-specific-flags,LOCAL_SRC_FILES,libc_common_src_files))
 $(eval $(call patch-up-arch-specific-flags,LOCAL_SRC_FILES,libc_arch_dynamic_src_files))
@@ -1242,7 +1249,8 @@ include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES := \
     $(libc_arch_static_src_files) \
-    bionic/libc_init_static.cpp
+    bionic/libc_init_static.cpp \
+    bionic/libc_nomalloc.cpp
 
 LOCAL_C_INCLUDES := $(libc_common_c_includes)
 LOCAL_CFLAGS := $(libc_common_cflags) \
@@ -1278,7 +1286,7 @@ LOCAL_CONLYFLAGS := $(libc_common_conlyflags)
 LOCAL_CPPFLAGS := $(libc_common_cppflags)
 LOCAL_C_INCLUDES := $(libc_common_c_includes)
 LOCAL_MODULE := libc_malloc
-LOCAL_CLANG := $(use_clang)
+LOCAL_CLANG := true
 LOCAL_CXX_STL := none
 LOCAL_ADDRESS_SANITIZER := false
 LOCAL_NATIVE_COVERAGE := $(bionic_coverage)
@@ -1306,10 +1314,6 @@ LOCAL_MODULE := libc
 LOCAL_CLANG := $(use_clang)
 LOCAL_ADDITIONAL_DEPENDENCIES := $(libc_common_additional_dependencies)
 LOCAL_WHOLE_STATIC_LIBRARIES := libc_common
-
-ifneq ($(MALLOC_IMPL),dlmalloc)
-LOCAL_WHOLE_STATIC_LIBRARIES += libjemalloc
-endif
 
 LOCAL_CXX_STL := none
 LOCAL_SYSTEM_SHARED_LIBRARIES :=
@@ -1364,10 +1368,6 @@ LOCAL_PACK_MODULE_RELOCATIONS := false
 
 LOCAL_SHARED_LIBRARIES := libdl
 LOCAL_WHOLE_STATIC_LIBRARIES := libc_common
-
-ifneq ($(MALLOC_IMPL),dlmalloc)
-LOCAL_WHOLE_STATIC_LIBRARIES += libjemalloc
-endif
 
 LOCAL_CXX_STL := none
 LOCAL_SYSTEM_SHARED_LIBRARIES :=

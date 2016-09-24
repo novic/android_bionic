@@ -48,7 +48,10 @@ __LIBC_HIDDEN__ void    _thread_arc4_unlock(void);
 
 #define _ARC4_LOCK() _thread_arc4_lock()
 #define _ARC4_UNLOCK() _thread_arc4_unlock()
-#define _ARC4_ATFORK(f) pthread_atfork(NULL, NULL, (f))
+
+extern void *__dso_handle;
+extern int __register_atfork(void (*)(void), void(*)(void), void (*)(void), void *);
+#define _ARC4_ATFORK(f) __register_atfork(NULL, NULL, (f), __dso_handle)
 
 __END_DECLS
 

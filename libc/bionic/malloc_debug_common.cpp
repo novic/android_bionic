@@ -39,22 +39,17 @@
 
 #include "malloc_debug_common.h"
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include "private/ScopedPthreadMutexLocker.h"
 
-#if defined(USE_JEMALLOC)
-#include "jemalloc.h"
-#define Malloc(function)  je_ ## function
-#elif defined(USE_DLMALLOC)
-#include "dlmalloc.h"
-#define Malloc(function)  dl ## function
-#else
-#error "Either one of USE_DLMALLOC or USE_JEMALLOC must be defined."
-#endif
+#include "omalloc.h"
+#define Malloc(function) o_ ## function
 
 // In a VM process, this is set to 1 after fork()ing out of zygote.
 int gMallocLeakZygoteChild = 0;
@@ -69,6 +64,7 @@ static const MallocDebug __libc_malloc_default_dispatch __attribute__((aligned(3
   Malloc(mallinfo),
   Malloc(malloc),
   Malloc(malloc_usable_size),
+  Malloc(__malloc_object_size),
   Malloc(memalign),
   Malloc(posix_memalign),
 #if defined(HAVE_DEPRECATED_MALLOC_FUNCS)
@@ -80,8 +76,17 @@ static const MallocDebug __libc_malloc_default_dispatch __attribute__((aligned(3
 #endif
 };
 
+#if defined(LIBC_STATIC)
+const
+#endif
+static union {
+  const MallocDebug* table;
+  char padding[PAGE_SIZE];
+} malloc_dispatch __attribute__((aligned(PAGE_SIZE))) = {
+  &__libc_malloc_default_dispatch
+};
+
 // Selector of dispatch table to use for dispatching malloc calls.
-static const MallocDebug* __libc_malloc_dispatch = &__libc_malloc_default_dispatch;
 
 // Handle to shared library where actual memory allocation is implemented.
 // This library is loaded and memory allocation calls are redirected there
@@ -244,46 +249,50 @@ extern "C" void free_malloc_leak_info(uint8_t* info) {
 // Allocation functions
 // =============================================================================
 extern "C" void* calloc(size_t n_elements, size_t elem_size) {
-  return __libc_malloc_dispatch->calloc(n_elements, elem_size);
+  return malloc_dispatch.table->calloc(n_elements, elem_size);
 }
 
 extern "C" void free(void* mem) {
-  __libc_malloc_dispatch->free(mem);
+  malloc_dispatch.table->free(mem);
 }
 
 extern "C" struct mallinfo mallinfo() {
-  return __libc_malloc_dispatch->mallinfo();
+  return malloc_dispatch.table->mallinfo();
 }
 
 extern "C" void* malloc(size_t bytes) {
-  return __libc_malloc_dispatch->malloc(bytes);
+  return malloc_dispatch.table->malloc(bytes);
 }
 
 extern "C" size_t malloc_usable_size(const void* mem) {
-  return __libc_malloc_dispatch->malloc_usable_size(mem);
+  return malloc_dispatch.table->malloc_usable_size(mem);
+}
+
+extern "C" size_t __malloc_object_size(const void* mem) {
+  return malloc_dispatch.table->__malloc_object_size(mem);
 }
 
 extern "C" void* memalign(size_t alignment, size_t bytes) {
-  return __libc_malloc_dispatch->memalign(alignment, bytes);
+  return malloc_dispatch.table->memalign(alignment, bytes);
 }
 
 extern "C" int posix_memalign(void** memptr, size_t alignment, size_t size) {
-  return __libc_malloc_dispatch->posix_memalign(memptr, alignment, size);
+  return malloc_dispatch.table->posix_memalign(memptr, alignment, size);
 }
 
 #if defined(HAVE_DEPRECATED_MALLOC_FUNCS)
 extern "C" void* pvalloc(size_t bytes) {
-  return __libc_malloc_dispatch->pvalloc(bytes);
+  return malloc_dispatch.table->pvalloc(bytes);
 }
 #endif
 
 extern "C" void* realloc(void* oldMem, size_t bytes) {
-  return __libc_malloc_dispatch->realloc(oldMem, bytes);
+  return malloc_dispatch.table->realloc(oldMem, bytes);
 }
 
 #if defined(HAVE_DEPRECATED_MALLOC_FUNCS)
 extern "C" void* valloc(size_t bytes) {
-  return __libc_malloc_dispatch->valloc(bytes);
+  return malloc_dispatch.table->valloc(bytes);
 }
 #endif
 
@@ -325,8 +334,7 @@ static void InitMalloc(void* malloc_impl_handler, MallocDebug* table, const char
 #endif
 }
 
-// Initializes memory allocation framework once per process.
-static void malloc_init_impl() {
+static void malloc_init_impl_write() {
   const char* so_name = NULL;
   MallocDebugInit malloc_debug_initialize = NULL;
   unsigned int qemu_running = 0;
@@ -486,8 +494,16 @@ static void malloc_init_impl() {
               getprogname(), g_malloc_debug_level);
     dlclose(malloc_impl_handle);
   } else {
-    __libc_malloc_dispatch = &malloc_dispatch_table;
+    malloc_dispatch.table = &malloc_dispatch_table;
     libc_malloc_impl_handle = malloc_impl_handle;
+  }
+}
+
+// Initializes memory allocation framework once per process.
+static void malloc_init_impl() {
+  malloc_init_impl_write();
+  if (mprotect(&malloc_dispatch, sizeof(malloc_dispatch), PROT_READ) == -1) {
+    __libc_fatal("failed to mprotect PROT_READ malloc_dispatch table: %s", strerror(errno));
   }
 }
 

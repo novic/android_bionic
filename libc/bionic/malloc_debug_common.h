@@ -94,6 +94,7 @@ struct MallocDebug {
   MallocDebugMallinfo mallinfo;
   MallocDebugMalloc malloc;
   MallocDebugMallocUsableSize malloc_usable_size;
+  MallocDebugMallocUsableSize __malloc_object_size;
   MallocDebugMemalign memalign;
   MallocDebugPosixMemalign posix_memalign;
 #if defined(HAVE_DEPRECATED_MALLOC_FUNCS)

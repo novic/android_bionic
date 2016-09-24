@@ -52,6 +52,7 @@ void quick_exit(int) __noreturn;
 #endif
 
 extern char* getenv(const char*);
+extern char* secure_getenv(const char*);
 extern int putenv(char*);
 extern int setenv(const char*, const char*, int);
 extern int unsetenv(const char*);

@@ -28,8 +28,6 @@
 #define _REALLY_INCLUDE_SYS__SYSTEM_PROPERTIES_H_
 #include <sys/_system_properties.h>
 
-#define WRITE_OFFSET   32
-
 constexpr char SYSTRACE_PROPERTY_NAME[] = "debug.atrace.tags.enableflags";
 
 static Lock g_lock;
@@ -93,15 +91,9 @@ ScopedTrace::ScopedTrace(const char* message) {
     return;
   }
 
-  // If bionic tracing has been enabled, then write the message to the
-  // kernel trace_marker.
-  int length = strlen(message);
-  char buf[length + WRITE_OFFSET];
-  size_t len = snprintf(buf, length + WRITE_OFFSET, "B|%d|%s", getpid(), message);
-
   // Tracing may stop just after checking property and before writing the message.
   // So the write is acceptable to fail. See b/20666100.
-  TEMP_FAILURE_RETRY(write(trace_marker_fd, buf, len));
+  dprintf(trace_marker_fd, "B|%d|%s", getpid(), message);
 }
 
 ScopedTrace::~ScopedTrace() {

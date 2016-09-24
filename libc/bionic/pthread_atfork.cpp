@@ -29,6 +29,8 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdlib.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "private/bionic_macros.h"
 
@@ -42,6 +44,9 @@ struct atfork_t {
 
   void* dso_handle;
 };
+
+static atfork_t* pool;
+static atfork_t* page_list;
 
 class atfork_list_t {
  public:
@@ -101,7 +106,8 @@ class atfork_list_t {
       last_ = entry->prev;
     }
 
-    free(entry);
+    entry->next = pool;
+    pool = entry;
   }
 
   atfork_t* first_;
@@ -112,6 +118,10 @@ class atfork_list_t {
 
 static pthread_mutex_t g_atfork_list_mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 static atfork_list_t g_atfork_list;
+
+extern "C" void __malloc_pre_fork();
+extern "C" void __malloc_post_fork_parent();
+extern "C" void __malloc_post_fork_child();
 
 void __bionic_atfork_run_prepare() {
   // We lock the atfork list here, unlock it in the parent, and reset it in the child.
@@ -127,6 +137,8 @@ void __bionic_atfork_run_prepare() {
       it->prepare();
     }
   });
+
+  __malloc_pre_fork();
 }
 
 void __bionic_atfork_run_child() {
@@ -135,6 +147,8 @@ void __bionic_atfork_run_child() {
       it->child();
     }
   });
+
+  __malloc_post_fork_child();
 
   g_atfork_list_mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 }
@@ -146,25 +160,58 @@ void __bionic_atfork_run_parent() {
     }
   });
 
+  __malloc_post_fork_parent();
+
   pthread_mutex_unlock(&g_atfork_list_mutex);
 }
 
 // __register_atfork is the name used by glibc
 extern "C" int __register_atfork(void (*prepare)(void), void (*parent)(void),
                                  void(*child)(void), void* dso) {
-  atfork_t* entry = reinterpret_cast<atfork_t*>(malloc(sizeof(atfork_t)));
-  if (entry == nullptr) {
-    return ENOMEM;
+  size_t page_size = getpagesize();
+
+  pthread_mutex_lock(&g_atfork_list_mutex);
+
+  for (atfork_t* page_it = page_list; page_it; page_it = page_it->next) {
+    mprotect(page_it, page_size, PROT_READ|PROT_WRITE);
   }
+
+  if (!pool) {
+    char* page = static_cast<char*>(mmap(NULL, page_size, PROT_READ|PROT_WRITE,
+                                         MAP_ANONYMOUS|MAP_PRIVATE, -1, 0));
+    if (page == MAP_FAILED) {
+      for (atfork_t* page_it = page_list; page_it; page_it = page_it->next) {
+        mprotect(page_it, page_size, PROT_READ);
+      }
+
+      pthread_mutex_unlock(&g_atfork_list_mutex);
+      return ENOMEM;
+    }
+
+    for (char* it = page + sizeof(atfork_t); it < page + page_size - sizeof(atfork_t); it += sizeof(atfork_t)) {
+      atfork_t* node = reinterpret_cast<atfork_t*>(it);
+      node->next = pool;
+      pool = node;
+    }
+
+    atfork_t* page_node = reinterpret_cast<atfork_t*>(page);
+    page_node->next = page_list;
+    page_list = page_node;
+  }
+
+  atfork_t* entry = pool;
+  pool = entry->next;
 
   entry->prepare = prepare;
   entry->parent = parent;
   entry->child = child;
   entry->dso_handle = dso;
 
-  pthread_mutex_lock(&g_atfork_list_mutex);
-
   g_atfork_list.push_back(entry);
+
+  for (atfork_t* page_it = page_list; page_it; page_it = page_it->next) {
+    mprotect(page_it, page_size, PROT_READ);
+  }
 
   pthread_mutex_unlock(&g_atfork_list_mutex);
 
@@ -173,9 +220,21 @@ extern "C" int __register_atfork(void (*prepare)(void), void (*parent)(void),
 
 extern "C" __LIBC_HIDDEN__ void __unregister_atfork(void* dso) {
   pthread_mutex_lock(&g_atfork_list_mutex);
+
+  size_t page_size = getpagesize();
+
+  for (atfork_t* page_it = page_list; page_it; page_it = page_it->next) {
+    mprotect(page_it, page_size, PROT_READ|PROT_WRITE);
+  }
+
   g_atfork_list.remove_if([&](const atfork_t* entry) {
     return entry->dso_handle == dso;
   });
+
+  for (atfork_t* page_it = page_list; page_it; page_it = page_it->next) {
+    mprotect(page_it, page_size, PROT_READ);
+  }
+
   pthread_mutex_unlock(&g_atfork_list_mutex);
 }
 

@@ -128,7 +128,11 @@ __LIBC_HIDDEN__ void pthread_key_clean_all(void);
  * from the default thread stack size. This should keep memory usage
  * roughly constant.
  */
+#ifdef __LP64__
+#define PTHREAD_STACK_SIZE_DEFAULT ((8 * 1024 * 1024) - SIGSTKSZ)
+#else
 #define PTHREAD_STACK_SIZE_DEFAULT ((1 * 1024 * 1024) - SIGSTKSZ)
+#endif
 
 // Leave room for a guard page in the internally created signal stacks.
 #if defined(__LP64__)

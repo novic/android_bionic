@@ -37,6 +37,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/cdefs.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
@@ -196,7 +197,7 @@ extern "C" intmax_t strntoimax(const char* nptr, char** endptr, int base, size_t
 }
 
 // POSIX calls this dprintf, but LP32 Android had fdprintf instead.
-extern "C" int fdprintf(int fd, const char* fmt, ...) {
+extern "C" __printflike(2, 3) int fdprintf(int fd, const char* fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
   int rc = vdprintf(fd, fmt, ap);
@@ -205,7 +206,7 @@ extern "C" int fdprintf(int fd, const char* fmt, ...) {
 }
 
 // POSIX calls this vdprintf, but LP32 Android had fdprintf instead.
-extern "C" int vfdprintf(int fd, const char* fmt, va_list ap) {
+extern "C" __printflike(2, 0) int vfdprintf(int fd, const char* fmt, va_list ap) {
   return vdprintf(fd, fmt, ap);
 }
 
@@ -260,11 +261,6 @@ extern "C" sighandler_t sysv_signal(int signum, sighandler_t handler) {
 extern "C" int __getdents64(unsigned int, dirent*, unsigned int);
 extern "C" int getdents(unsigned int fd, dirent* dirp, unsigned int count) {
   return __getdents64(fd, dirp, count);
-}
-
-// This is a BSDism that we never implemented correctly. Used by Firefox.
-extern "C" int issetugid() {
-  return 0;
 }
 
 // This was removed from POSIX 2004.
@@ -372,23 +368,9 @@ extern "C" void endpwent() { }
 
 // Since dlmalloc_inspect_all and dlmalloc_trim are exported for systems
 // that use dlmalloc, be consistent and export them everywhere.
-#if defined(USE_JEMALLOC)
 extern "C" void dlmalloc_inspect_all(void (*)(void*, void*, size_t, void*), void*) {
 }
-#else
-extern "C" void dlmalloc_inspect_all_real(void (*)(void*, void*, size_t, void*), void*);
-extern "C" void dlmalloc_inspect_all(void (*handler)(void*, void*, size_t, void*), void* arg) {
-  dlmalloc_inspect_all_real(handler, arg);
-}
-#endif
 
-#if defined(USE_JEMALLOC)
 extern "C" int dlmalloc_trim(size_t) {
   return 0;
 }
-#else
-extern "C" int dlmalloc_trim_real(size_t);
-extern "C" int dlmalloc_trim(size_t pad) {
-  return dlmalloc_trim_real(pad);
-}
-#endif

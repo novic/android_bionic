@@ -23,6 +23,7 @@ LIBC {
     __dn_comp;
     __dn_count_labels;
     __dn_skipname;
+    __dynamic_object_size;
     __epoll_pwait; # arm x86 mips
     __eqdf2; # arm
     __errno;
@@ -56,17 +57,20 @@ LIBC {
     __fpending;
     __fpurge;
     __freadable;
+    __fread_chk;
     __fsetlocking;
     __fstatfs64; # arm x86 mips
     __futex_wait; # arm x86 mips
     __futex_wake; # arm x86 mips
     __fwritable;
+    __fwrite_chk;
     __gedf2; # arm
     __get_h_errno;
     __get_thread; # arm x86 mips
     __get_tls; # arm x86 mips
     __getcpu; # arm x86 mips
     __getcwd; # arm x86 mips
+    __getcwd_chk;
     __getdents64; # arm x86 mips
     __getpid; # arm x86 mips
     __getpriority; # arm x86 mips
@@ -94,13 +98,17 @@ LIBC {
     __libc_current_sigrtmax;
     __libc_current_sigrtmin;
     __libc_init;
+    __library_region_end;
+    __library_region_start;
     __llseek; # arm x86 mips
     __loc_aton;
     __loc_ntoa;
     __lshrdi3; # arm
     __ltdf2; # arm
     __memchr_chk;
+    __memcmp_chk;
     __memcpy_chk;
+    __memmem_chk;
     __memmove_chk;
     __memrchr_chk;
     __memset_chk;
@@ -166,6 +174,8 @@ LIBC {
     __ptrace; # arm x86 mips
     __putlong;
     __putshort;
+    __pwrite_chk;
+    __pwrite64_chk;
     __read_chk;
     __readlink_chk;
     __readlinkat_chk;
@@ -204,6 +214,7 @@ LIBC {
     __sched_getaffinity; # arm x86 mips
     __sclose; # arm x86 mips
     __sdidinit; # arm x86 mips
+    __sendto_chk;
     __set_errno; # arm x86 mips
     __set_thread_area; # x86
     __set_tid_address; # arm x86 mips
@@ -279,6 +290,7 @@ LIBC {
     __vsprintf_chk;
     __wait4; # arm x86 mips
     __waitid; # arm x86 mips
+    __write_chk;
     _ctype_;
     _Exit;
     _exit;

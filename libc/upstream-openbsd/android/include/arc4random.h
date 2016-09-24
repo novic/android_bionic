@@ -26,20 +26,13 @@
 
 #include <pthread.h>
 #include <signal.h>
+#include "private/bionic_prctl.h"
 
 // Android gets these from "thread_private.h".
 #include "thread_private.h"
 //static pthread_mutex_t arc4random_mtx = PTHREAD_MUTEX_INITIALIZER;
 //#define _ARC4_LOCK()   pthread_mutex_lock(&arc4random_mtx)
 //#define _ARC4_UNLOCK() pthread_mutex_unlock(&arc4random_mtx)
-
-#ifdef __GLIBC__
-extern void *__dso_handle;
-extern int __register_atfork(void (*)(void), void(*)(void), void (*)(void), void *);
-#define _ARC4_ATFORK(f) __register_atfork(NULL, NULL, (f), __dso_handle)
-#else
-#define _ARC4_ATFORK(f) pthread_atfork(NULL, NULL, (f))
-#endif
 
 static inline void
 _getentropy_fail(void)
@@ -75,12 +68,17 @@ _rs_allocate(struct _rs **rsp, struct _rsx **rsxp)
 	if ((*rsp = mmap(NULL, sizeof(**rsp), PROT_READ|PROT_WRITE,
 	    MAP_ANON|MAP_PRIVATE, -1, 0)) == MAP_FAILED)
 		return (-1);
+	prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, *rsp, sizeof(**rsp),
+	    "arc4random _rs structure");
 
 	if ((*rsxp = mmap(NULL, sizeof(**rsxp), PROT_READ|PROT_WRITE,
 	    MAP_ANON|MAP_PRIVATE, -1, 0)) == MAP_FAILED) {
 		munmap(*rsxp, sizeof(**rsxp));
 		return (-1);
 	}
+
+	prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, *rsxp, sizeof(**rsxp),
+	    "arc4random _rsx structure");
 
 	_ARC4_ATFORK(_rs_forkhandler);
 	return (0);
