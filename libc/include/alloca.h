@@ -28,8 +28,8 @@
 #ifndef _ALLOCA_H
 #define _ALLOCA_H
 
-__attribute__((deprecated("replace alloca with C99 variable length arrays or dynamic allocation")))
-void* __builtin_alloca(__SIZE_TYPE__ size);
+//__attribute__((deprecated("replace alloca with C99 variable length arrays or dynamic allocation")))
+//void* __builtin_alloca(__SIZE_TYPE__ size);
 
 #define alloca(size)   __builtin_alloca(size)
 
